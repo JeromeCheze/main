@@ -84,6 +84,7 @@ class _EventRequestOptions(RequestOptions):
     PFM = ["includefocalmechanism", "focalmechanism", "fm"]
     PAllFMs = ["includeallfocalmechanisms", "allfocalmechanisms", "allfms"]
     PStaMTs = ["includestationmts", "stationmts", "stamts"]
+    PStaMag = ["includestationmagnitudes"]
     PComments = ["includecomments", "comments"]
     PFormatted = ["formatted"]
 
@@ -124,6 +125,7 @@ class _EventRequestOptions(RequestOptions):
         + PFM
         + PAllFMs
         + PStaMTs
+        + PStaMag
         + PComments
         + PFormatted
     )
@@ -176,6 +178,7 @@ class _EventRequestOptions(RequestOptions):
         self.fm = None
         self.allFMs = None
         self.staMTs = None
+        self.staMag = None
 
     # ---------------------------------------------------------------------------
     def parse(self):
@@ -233,6 +236,7 @@ class _EventRequestOptions(RequestOptions):
         self.fm = self.parseBool(self.PFM)
         self.allFMs = self.parseBool(self.PAllFMs)
         self.staMTs = self.parseBool(self.PStaMTs)
+        self.staMag = self.parseBool(self.PStaMag)
         self.comments = self.parseBool(self.PComments)
 
         # limit, offset, orderBy, updatedAfter
@@ -275,7 +279,8 @@ class _EventRequestOptions(RequestOptions):
                 f"invalid mixture of parameters, the parameter 'self.PEventID[0]' may "
                 f"only be combined with: {self.PAllOrigins[0]}, {self.PAllMags[0]}, "
                 f"{self.PArrivals[0]}, {self.PPicks[0]}, {self.PFM[0]}, "
-                f"{self.PAllFMs[0]}, {self.PStaMTs[0]}, {self.PComments[0]}"
+                f"{self.PAllFMs[0]}, {self.PStaMTs[0]}, {self.PComments[0]}, "
+                f"{self.PStaMag[0]}"
             )
 
         # format XML
@@ -403,6 +408,8 @@ class FDSNEvent(BaseResource):
         pickIDs = set()
         if ro.picks is None:
             ro.picks = True
+
+        ampIDs = set()
 
         # add related information
         for iEvent in range(ep.eventCount()):
@@ -561,8 +568,22 @@ class FDSNEvent(BaseResource):
                 if not self.checkObjects(req, objCount, maxObj):
                     return False
 
-                # TODO station magnitudes, amplitudes
-                # - added pick id for each pick referenced by amplitude
+                # station magnitude contributions + station magnitudes
+                if ro.staMag:
+                    staMagIDs = set()
+                    for iMag in range(o.magnitudeCount()):
+                        mag = o.magnitude(iMag)
+                        objCount += dbq.loadStationMagnitudeContributions(mag)
+                        for iSMC in range(mag.stationMagnitudeContributionCount()):
+                            smc = mag.stationMagnitudeContribution(iSMC)
+                            staMagIDs.add(smc.stationMagnitudeID())
+                    objCount += len(staMagIDs)
+                    for smID in sorted(staMagIDs):
+                        obj = dbq.getObject(seiscomp.datamodel.StationMagnitude.TypeInfo(), smID)
+                        staMag = seiscomp.datamodel.StationMagnitude.Cast(obj)
+                        if staMag is not None:
+                            ampIDs.add(staMag.amplitudeID())
+                            o.add(staMag)
 
                 # arrivals
                 if ro.arrivals:
@@ -578,6 +599,20 @@ class FDSNEvent(BaseResource):
 
                 if not self.checkObjects(req, objCount, maxObj):
                     return False
+
+        # amplitudes
+        if ampIDs:
+            objCount += len(ampIDs)
+            if not self.checkObjects(req, objCount, maxObj):
+                return False
+            for ampID in sorted(ampIDs):
+                obj = dbq.getObject(seiscomp.datamodel.Amplitude.TypeInfo(), ampID)
+                amp = seiscomp.datamodel.Amplitude.Cast(obj)
+                if amp is not None:
+                    if self._hideAuthor:
+                        self._removeAuthor(amp)
+                    pickIDs.add(amp.pickID())
+                    ep.add(amp)
 
         # picks
         if pickIDs:
